@@ -186,3 +186,74 @@ def test_model_forward_features(model_name, batch_size):
         assert e == o.shape[1]
         assert o.shape[0] == batch_size
         assert not torch.isnan(o).any()
+
+
+def test_features():
+    model_name = 'resnet18'
+    batch_size = 1
+    model = create_model(model_name, pretrained=False, features_only=True, out_indices=[2, 3, 4])
+    model.eval()
+    expected_channels = model.feature_info.channels()
+    input_size = (3, 224, 224)
+    outputs = model(torch.randn((batch_size, *input_size)))
+    assert len(expected_channels) == len(outputs)
+    for e, o in zip(expected_channels, outputs):
+        assert e == o.shape[1]
+        assert o.shape[0] == batch_size
+        assert not torch.isnan(o).any()
+
+
+def test_vit():
+    model_name = 'vit_base_patch16_224'
+    batch_size = 1
+    num_classes = 1000
+    model = create_model(model_name, pretrained=True)
+
+    model.eval()
+    input_size = (3, 224, 224)
+    output = model(torch.randn((batch_size, *input_size)))
+    assert output.shape[0] == batch_size
+    assert output.shape[1] == num_classes
+
+
+def test_get_block_outputs_vit():
+    model_name = 'vit_base_patch16_224'
+    batch_size = 1
+    embed_dim = 768
+    patch_size = 16
+    input_size = (3, 224, 224)
+    num_patches_per_image = (input_size[-1] / patch_size) ** 2
+    block_idxs = [2, 3, 4]
+    model = create_model(model_name, pretrained=True)
+
+    model.eval()
+    input = torch.randn((batch_size, *input_size))
+    output = model.get_block_outputs(input, block_idxs)
+    assert len(output) == len(block_idxs)
+    for o in output:
+        assert batch_size == o.shape[0]
+        assert num_patches_per_image + 1 == o.shape[1]  # + 1 for cls token
+        assert embed_dim == o.shape[2]
+        assert not torch.isnan(o).any()
+
+
+def test_get_attention_maps_vit():
+    model_name = 'vit_base_patch16_224'
+    batch_size = 1
+    num_heads = 12
+    patch_size = 16
+    input_size = (3, 224, 224)
+    num_patches_per_image = (input_size[-1] / patch_size) ** 2
+    block_idxs = [2, 3, 4]
+    model = create_model(model_name, pretrained=True)
+
+    model.eval()
+    input = torch.randn((batch_size, *input_size))
+    output = model.get_attention_maps(input, block_idxs)
+    assert len(output) == len(block_idxs)
+    for o in output:
+        assert batch_size == o.shape[0]
+        assert num_heads == o.shape[1]
+        assert num_patches_per_image + 1 == o.shape[2]  # + 1 for cls token
+        assert num_patches_per_image + 1 == o.shape[3]
+        assert not torch.isnan(o).any()

@@ -179,6 +179,15 @@ class Attention(nn.Module):
         x = self.proj_drop(x)
         return x
 
+    def get_attention_map(self, x):
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        return attn
+
 
 class Block(nn.Module):
 
@@ -193,6 +202,9 @@ class Block(nn.Module):
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+
+    def get_attention_maps(self, x):
+        return self.attn.get_attention_map(self.norm1(x))
 
     def forward(self, x):
         x = x + self.drop_path(self.attn(self.norm1(x)))
@@ -220,7 +232,7 @@ class PatchEmbed(nn.Module):
         assert H == self.img_size[0] and W == self.img_size[1], \
             f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
         x = self.proj(x).flatten(2).transpose(1, 2)
-        return x
+        return x  # B x num_patches**2 x embed_dim
 
 
 class HybridEmbed(nn.Module):
@@ -369,6 +381,45 @@ class VisionTransformer(nn.Module):
         x = self.norm(x)[:, 0]
         x = self.pre_logits(x)
         return x
+
+    def get_block_outputs(self, x, block_idxs):
+        blocks = []
+        B = x.shape[0]
+        x = self.patch_embed(x)
+
+        cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+        x = torch.cat((cls_tokens, x), dim=1)
+        x = x + self.pos_embed
+        x = self.pos_drop(x)
+
+        for block_idx, blk in enumerate(self.blocks):
+            x = blk(x)
+            if block_idx in block_idxs:
+                blocks.append(x)
+
+        x = self.norm(x)[:, 0]
+        x = self.pre_logits(x)
+        return blocks
+
+    def get_attention_maps(self, x, block_idxs):
+        blocks = []
+        B = x.shape[0]
+        x = self.patch_embed(x)
+
+        cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+        x = torch.cat((cls_tokens, x), dim=1)
+        x = x + self.pos_embed
+        x = self.pos_drop(x)
+
+        for block_idx, blk in enumerate(self.blocks):
+            attn_map = blk.get_attention_maps(x)
+            if block_idx in block_idxs:
+                blocks.append(attn_map)
+            x = blk(x)
+
+        x = self.norm(x)[:, 0]
+        x = self.pre_logits(x)
+        return blocks
 
     def forward(self, x):
         x = self.forward_features(x)
